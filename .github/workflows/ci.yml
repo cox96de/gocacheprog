@@ -24,3 +24,9 @@ jobs:
       - name: Build Go
         run: docker build -t golang:dev -f go.Dockerfile .
 
+      - name: Compile
+        run: go build -o gocacheprog github.com/cox96de/gocacheprog/cmd/gocacheprog
+
+      - name: Test
+        run: docker run --rm -v $PWD:/app -w /app/cmd/gocacheprog -e GOCACHEPROG=/app/gocacheprog golang:dev go build -o main .
+

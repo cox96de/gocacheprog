@@ -6,4 +6,5 @@ RUN cd go/src \
     && GOEXPERIMENT=cacheprog GOOS=linux GOARCH=amd64 ./bootstrap.bash
 FROM debian as runtime
 COPY --from=builder /home/go-linux-amd64-bootstrap/ /usr/local/go
+RUN apt-get update && apt-get install -y ca-certificates
 ENV PATH=/go/bin:/usr/local/go/bin:$PATH

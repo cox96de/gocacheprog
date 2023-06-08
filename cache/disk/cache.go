@@ -51,7 +51,7 @@ func (c *DiskCache) Handler(ctx context.Context, req *protocol.ProgRequest, resp
 	return nil
 }
 
-func (c *DiskCache) handleClose(context.Context, *protocol.ProgRequest, *protocol.ProgResponse) error {
+func (c *DiskCache) handleClose(_ context.Context, _ *protocol.ProgRequest, _ *protocol.ProgResponse) error {
 	return nil
 }
 
@@ -119,11 +119,12 @@ func (c *DiskCache) handlePut(_ context.Context, req *protocol.ProgRequest, resp
 	if err != nil {
 		return errors.WithStack(err)
 	}
-	err = os.MkdirAll(filepath.Dir(c.fileName(req.ActionID, "a")), 0755)
+	actionFilepath := c.actionPath(req.ActionID)
+	err = os.MkdirAll(filepath.Dir(actionFilepath), 0755)
 	if err != nil {
 		return errors.WithStack(err)
 	}
-	err = os.WriteFile(c.fileName(req.ActionID, "a"), all, 0644)
+	err = os.WriteFile(actionFilepath, all, 0644)
 	if err != nil {
 		return errors.WithStack(err)
 	}

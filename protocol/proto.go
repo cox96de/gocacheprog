@@ -43,7 +43,7 @@ type ProgRequest struct {
 	// send in this JSON object so large values can be streamed in both directions.
 	// The base64 string body of a ProgRequest will always be written
 	// immediately after the JSON object and a newline.
-	Body io.Reader `json:"-"`
+	Body io.ReadSeeker `json:"-"`
 
 	// BodySize is the number of bytes of Body. If zero, the body isn't written.
 	BodySize int64 `json:",omitempty"`

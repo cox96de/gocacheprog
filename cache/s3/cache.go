@@ -5,11 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/aws/aws-sdk-go/aws/awserr"
 	"io"
 	"log"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/cox96de/gocacheprog/cache/disk"
 
 	"github.com/cox96de/gocacheprog/protocol"
 	"github.com/pkg/errors"
@@ -22,9 +26,18 @@ import (
 
 // Cache is a cache implementation that stores data in a S3 bucket.
 type Cache struct {
-	s3      *s3.S3
-	baseDir string
-	bucket  string
+	s3     *s3.S3
+	prefix string
+	bucket string
+
+	// Used to store data locally.
+	// disk is the local disk cache for s3 server.
+	disk *disk.DiskCache
+
+	// Used to calculate cache hit rate.
+	total atomic.Int32
+	hit   atomic.Int32
+	wg    sync.WaitGroup
 }
 
 // Option is the option for S3 cache.
@@ -39,6 +52,10 @@ type Option struct {
 	Bucket string
 	// Region is the region for S3.
 	Region string
+	// Prefix is the base dir for S3.
+	Prefix string
+	// LocalDir is the local cache dir.
+	LocalDir string
 }
 
 func NewCache(opt *Option) (*Cache, error) {
@@ -62,6 +79,8 @@ func NewCache(opt *Option) (*Cache, error) {
 	return &Cache{
 		s3:     s3cli,
 		bucket: opt.Bucket,
+		prefix: opt.Prefix,
+		disk:   disk.NewDiskCache(opt.LocalDir),
 	}, nil
 }
 
@@ -89,7 +108,11 @@ func (c *Cache) KnownCommands() ([]protocol.ProgCmd, error) {
 	return []protocol.ProgCmd{protocol.CmdGet, protocol.CmdPut, protocol.CmdClose}, nil
 }
 
-func (c *Cache) handleClose(ctx context.Context, req *protocol.ProgRequest, resp *protocol.ProgResponse) error {
+func (c *Cache) handleClose(_ context.Context, _ *protocol.ProgRequest, _ *protocol.ProgResponse) error {
+	c.wg.Wait()
+	hit := c.hit.Load()
+	total := c.total.Load()
+	log.Printf("s3 cache report, cache hit rate: %.2f(%d/%d)", float64(hit*100)/float64(total), hit, total)
 	return nil
 }
 
@@ -100,9 +123,31 @@ type meta struct {
 }
 
 func (c *Cache) handlePut(ctx context.Context, req *protocol.ProgRequest, resp *protocol.ProgResponse) error {
+	if err := c.disk.HandlePut(ctx, req, resp); err != nil {
+		return errors.WithStack(err)
+	}
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		if err := c.putInS3(ctx, req); err != nil {
+			// TODO: handle error properly
+			log.Printf("failed to save to s3: %+v", err)
+		}
+	}()
+	return nil
+}
+
+func (c *Cache) putInS3(ctx context.Context, req *protocol.ProgRequest) error {
 	name := c.objectPath(req.ObjectID)
 	if req.BodySize > 0 {
-		c.putFile(ctx, name, req.Body)
+		_, err := req.Body.Seek(0, io.SeekStart)
+		if err != nil {
+			return errors.WithStack(err)
+		}
+		_, err = c.putFile(ctx, name, req.Body)
+		if err != nil {
+			return errors.WithStack(err)
+		}
 	}
 	// TODO: meta might be not necessary, remove it, use s3's metadata instead
 	m := &meta{
@@ -116,11 +161,28 @@ func (c *Cache) handlePut(ctx context.Context, req *protocol.ProgRequest, resp *
 	if err != nil {
 		return err
 	}
-	resp.DiskPath = name
 	return nil
 }
 
+func isS3NoSuchKeyError(err error) bool {
+	if aerr, ok := err.(awserr.Error); ok && aerr.Code() == s3.ErrCodeNoSuchKey {
+		return true
+	}
+	return false
+}
+
 func (c *Cache) handleGet(ctx context.Context, req *protocol.ProgRequest, resp *protocol.ProgResponse) (err error) {
+	defer func() {
+		c.total.Add(1)
+		if !resp.Miss {
+			c.hit.Add(1)
+		}
+	}()
+	diskCacheError := c.disk.HandleGet(ctx, req, resp)
+	if diskCacheError == nil && !resp.Miss {
+		return nil
+	}
+	resp.Miss = false
 	defer func() {
 		if err != nil {
 			resp.Miss = true
@@ -128,7 +190,7 @@ func (c *Cache) handleGet(ctx context.Context, req *protocol.ProgRequest, resp *
 	}()
 	reader, err := c.getFile(ctx, c.actionPath(req.ActionID))
 	if err != nil {
-		if aerr, ok := err.(awserr.Error); ok && aerr.Code() == s3.ErrCodeNoSuchKey {
+		if isS3NoSuchKeyError(err) {
 			resp.Miss = true
 			return nil
 		}
@@ -146,6 +208,26 @@ func (c *Cache) handleGet(ctx context.Context, req *protocol.ProgRequest, resp *
 	resp.Size = m.Size
 	unix := time.Unix(m.Time, 0)
 	resp.Time = &unix
+	objectPath := c.objectPath(m.OutputID)
+	object, err := c.getFile(ctx, objectPath)
+	if err != nil {
+		if isS3NoSuchKeyError(err) {
+			resp.Miss = true
+			return nil
+		}
+		return errors.WithStack(err)
+	}
+	all, err = io.ReadAll(object.Body)
+	if err != nil {
+		return errors.WithStack(err)
+	}
+	req.Body = bytes.NewReader(all)
+	req.BodySize = m.Size
+	req.ObjectID = m.OutputID
+	err = c.disk.HandlePut(ctx, req, resp)
+	if err != nil {
+		return errors.WithStack(err)
+	}
 	return nil
 }
 
@@ -164,15 +246,14 @@ func (c *Cache) fileName(id []byte, key string) string {
 
 func (c *Cache) getFile(ctx context.Context, path string) (*s3.GetObjectOutput, error) {
 	return c.s3.GetObjectWithContext(ctx, &s3.GetObjectInput{
-		Key:    aws.String(filepath.Join(c.baseDir, path)),
+		Key:    aws.String(filepath.Join(c.prefix, path)),
 		Bucket: &c.bucket,
 	})
 }
 
 func (c *Cache) putFile(ctx context.Context, path string, body io.ReadSeeker) (*s3.PutObjectOutput, error) {
-	// TODO: save a copy in local, as a cache for s3
 	return c.s3.PutObjectWithContext(ctx, &s3.PutObjectInput{
-		Key:    aws.String(filepath.Join(c.baseDir, path)),
+		Key:    aws.String(filepath.Join(c.prefix, path)),
 		Body:   body,
 		Bucket: &c.bucket,
 	})

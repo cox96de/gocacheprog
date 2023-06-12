@@ -59,6 +59,10 @@ func (c *DiskCache) actionPath(id []byte) string {
 	return c.fileName(id, "a")
 }
 
+func (c *DiskCache) HandleGet(ctx context.Context, req *protocol.ProgRequest, resp *protocol.ProgResponse) (err error) {
+	return c.handleGet(ctx, req, resp)
+}
+
 func (c *DiskCache) handleGet(_ context.Context, req *protocol.ProgRequest, resp *protocol.ProgResponse) (err error) {
 	defer func() {
 		if err != nil {
@@ -91,6 +95,10 @@ func (c *DiskCache) handleGet(_ context.Context, req *protocol.ProgRequest, resp
 
 func (c *DiskCache) objectPath(id []byte) string {
 	return c.fileName(id, "o")
+}
+
+func (c *DiskCache) HandlePut(ctx context.Context, req *protocol.ProgRequest, resp *protocol.ProgResponse) error {
+	return c.handlePut(ctx, req, resp)
 }
 
 func (c *DiskCache) handlePut(_ context.Context, req *protocol.ProgRequest, resp *protocol.ProgResponse) error {

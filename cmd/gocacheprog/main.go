@@ -2,12 +2,13 @@ package main
 
 import (
 	"context"
+	"os"
+
 	"github.com/cox96de/gocacheprog/cache/disk"
 	"github.com/cox96de/gocacheprog/cache/s3"
 	"github.com/cox96de/gocacheprog/protocol"
 	"github.com/pkg/errors"
 	"github.com/spf13/pflag"
-	"os"
 )
 
 type Flags struct {
@@ -21,6 +22,7 @@ type Flags struct {
 		Endpoint  string
 		Bucket    string
 		Region    string
+		Prefix    string
 	}
 }
 
@@ -34,6 +36,7 @@ func parseFlags(args []string) (*Flags, error) {
 	flagSet.StringVar(&f.S3.Endpoint, "s3-endpoint", "", "s3 endpoint")
 	flagSet.StringVar(&f.S3.Bucket, "s3-bucket", "", "s3 bucket")
 	flagSet.StringVar(&f.S3.Region, "s3-region", "default", "s3 region")
+	flagSet.StringVar(&f.S3.Prefix, "s3-prefix", "gocacheprog", "s3 prefix")
 	err := flagSet.Parse(args)
 	if err != nil {
 		flagSet.Usage()
@@ -63,6 +66,8 @@ func composeCache(c *Flags) (protocol.Handler, error) {
 			Endpoint:  c.S3.Endpoint,
 			Bucket:    c.S3.Bucket,
 			Region:    c.S3.Region,
+			Prefix:    c.S3.Prefix,
+			LocalDir:  c.Disk.Dir,
 		})
 	case "disk":
 		return disk.NewDiskCache(c.Disk.Dir), nil

@@ -24,6 +24,5 @@ jobs:
       - name: Compile
         run: go build -o gocacheprog github.com/cox96de/gocacheprog/cmd/gocacheprog
 
-      - name: Test
+      - name: Test with disk cache
         run: docker run --rm -v $PWD:/app -w /app/cmd/gocacheprog -e "GOCACHEPROG=/app/gocacheprog --cache=disk --disk-dir=/root/.cache/go-build/gocacheprog" cox96de/golang:gocacheprog  go build -o main .
-

@@ -1,0 +1,17 @@
+version: "3"
+services:
+  s3:
+    image: quay.io/minio/minio
+    environment:
+      MINIO_ROOT_USER: ROOTNAME
+      MINIO_ROOT_PASSWORD: ROOTPASSWORD
+    ports:
+      - "9000:9000"
+      - "9090:9090"
+    volumes:
+      - ./data:/data
+    command:
+      - server
+      - /data
+      - --console-address
+      - ":9090"
